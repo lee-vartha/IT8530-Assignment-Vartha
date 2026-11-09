@@ -1,6 +1,6 @@
 // @ts-nocheck React and JSX type declarations are missing from this prototype's dependencies.
 import {useEffect, useMemo, useRef, useState} from 'react';
-import {Activity, ArrowLeft, ArrowRight, CheckCircle2, ChevronRight, CircleAlert, Clock3, FileCode2, History, Home, Info, ScanSearch, Search, Settings2, ShieldCheck, ShieldAlert, Server, Send, UserRound, RotateCcw, X,} from 'lucide-react';
+import {Activity, ArrowLeft, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, CircleAlert, Clock3, FileCode2, History, Home, Info, ScanSearch, Search, Settings2, ShieldCheck, ShieldAlert, Server, Send, UserRound, RotateCcw, X,} from 'lucide-react';
 
 // Defining the pages, verdict and other details for the application
 type Page = 'home' | 'scan' | 'history' | 'settings' | 'analysing' | 'result';
@@ -59,6 +59,7 @@ function readableDate(iso: string) {
 
 export default function App() {
     const [page, setPage] = useState<Page>('home');
+    const [toast, setToast] = useState('');
     const [selectedId, setSelectedId] = useState(demoSamples[0].id);
     const [runningId, setRunningId] = useState<string | null>(null);
     const [search, setSearch] = useState('');
@@ -104,6 +105,26 @@ const filteredHistory = useMemo(
 //   [scanList, filter, search]
 // );
 
+const handleAnalyseClick = () => {
+  const selectedSample = demoSamples.find(
+    sample => sample.id === selectedId
+  )
+
+  if (!selectedSample) return;
+
+  const alreadyScanned = history.some(
+    scan => 
+      scan.sampleId === selectedSample.id || scan.name === selectedSample.name
+  )
+
+  if (alreadyScanned) {
+    setToast(`${selectedSample.name} has already been scanned!`);
+    return;
+  }
+
+  startAnalysis();
+}
+
 function startAnalysis() {
     setRunningId(selectedSample.id);
     setProgress(0);
@@ -134,6 +155,14 @@ useEffect(() =>{
 }, [history]);  
 
 useEffect(() => {
+  if (!toast) return;
+  const timer = window.setTimeout(() => {
+    setToast('');
+  }, 4000);
+  return () => window.clearTimeout(timer);
+}, [toast]);
+
+useEffect(() => {
     mainRef.current?.scrollTo({
         top: 0,
         behavior: 'auto'
@@ -151,25 +180,25 @@ useEffect(() => {
     const percent = Math.min(100, Math.floor(((Date.now() - startedAt) / 8000) * 100));
     setProgress(percent);
 
-    if (percent === 100 && !completed) {
-        completed = true;
-        window.clearInterval(timer);
-        const scan: ScanRecord = {
-            id: `${Date.now()}-${sample.id}`,
-            sampleId: sample.id,
-            name: sample.name,
-            size: sample.size,
-            scannedAt: new Date().toISOString(),
-            verdict: sample.verdict,
-            score: sample.score,
-            explanation: sample.explanation,
-        };
-        setHistory(items => [scan, ...items]);
-        setActiveScan(scan);
-        setPage('result');
-    }
-  }, 50);
-  return () => window.clearInterval(timer);
+  if (percent === 100 && !completed) {
+      completed = true;
+      window.clearInterval(timer);
+      const scan: ScanRecord = {
+          id: `${Date.now()}-${sample.id}`,
+          sampleId: sample.id,
+          name: sample.name,
+          size: sample.size,
+          scannedAt: new Date().toISOString(),
+          verdict: sample.verdict,
+          score: sample.score,
+          explanation: sample.explanation,
+      };
+      setHistory(items => [scan, ...items]);
+      setActiveScan(scan);
+      setPage('result');
+  }
+}, 50);
+return () => window.clearInterval(timer);
 }, [page, runningId]);
 
 
@@ -229,19 +258,19 @@ return (
             <div className="grid grid-cols-2 gap-4">
               <Panel className="bg-[#eaf5f6]!">
                 <p className="text-2xl font-bold">{history.length}</p>
-                <p className="text-L text-slate-500">Total scans</p>
+                <p className="text-XS text-slate-500">Total scans</p>
               </Panel>
               <Panel>
                 <p className="text-2xl  text-slate-500 font-bold">
                   {benignCount}
                 </p>
-                <p className="text-L text-slate-500">Benign</p>
+                <p className="text- text-slate-500">Benign</p>
               </Panel>
               <Panel className="bg-[#F5EDEA]!">
                 <p className="text-2xl font-bold">
                   {maliciousCount}
                 </p>
-                <p className="text-L text-slate-500">Malicious</p>
+                <p className="text-S text-slate-500">Malicious</p>
               </Panel>
               
               {/* in progress panel*/}
@@ -249,7 +278,7 @@ return (
                 <p className="text-2xl font-bold  text-slate-500">
                   {runningId ? '0' : '1'}
                 </p>
-                <p className="text-L text-slate-500">Analysing</p>
+                <p className="text-M text-slate-500">Analysing</p>
               </Panel>
 
             </div>
@@ -362,7 +391,7 @@ return (
 
             <button
               type="button"
-              onClick={startAnalysis}
+              onClick={handleAnalyseClick}
               className="w-full bg-[#eaf5f6] px-4 py-4 font-semibold text-slate-500 border"
             >
               Analyse Selected File
@@ -379,11 +408,8 @@ return (
           <>
           <div className="text-center">
             <h1 className="text-2xl font-bold">Analysing Sample</h1>
-            <p className="mt-2 text-sm text-slate-500">
+            <p className="text-sm text-slate-500">
               Simulating executable analysis...
-            </p>
-            <p className="mt-2 text-xs font-semibold text-[#7d2773]">
-              Demonstration only!
             </p>
           </div>
 
@@ -623,6 +649,47 @@ return (
             );
           })}
         </nav>
+        
+        {/* Already scanned toast */}
+        {toast && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-24 left-1/2 z-50 w-[90%] max-w-sm -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-lg"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                size={22}
+                className="shrink-0 text-amber-600"
+              />
+
+              <div className="flex-1">
+                <p className="font-semibold text-amber-900">
+                  Already Scanned
+                </p>
+
+                <p className="mt-1 text-sm text-amber-800">
+                  {toast}
+                </p>
+
+                <p className="mt-1 text-xs text-amber-700">
+                  View the existing result in Scan History.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setToast('')}
+                aria-label="Dismiss notification"
+                className="text-amber-700 hover:text-amber-900"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        
       </div>
     </div>
   );
