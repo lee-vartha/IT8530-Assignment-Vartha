@@ -13,6 +13,11 @@ venv/
 # Secrets
 .env
 .env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
 *.key
 *.pem
 *token*
@@ -123,6 +128,10 @@ dist
 
 # Sveltekit cache directory
 .svelte-kit/
+
+**/.vite/
+**/dist/
+**/node_modules/
 
 # vitepress build output
 **/.vitepress/dist
