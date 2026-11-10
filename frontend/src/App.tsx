@@ -1,34 +1,14 @@
 // @ts-nocheck React and JSX type declarations are missing from this prototype's dependencies.
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {Activity, ArrowLeft, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, CircleAlert, Clock3, FileCode2, History, Home, Info, ScanSearch, Search, Settings2, ShieldCheck, ShieldAlert, Server, Send, UserRound, RotateCcw, X,} from 'lucide-react';
+// new details for combining assignments
+import {getPreparedSamples, analysePreparedSample, type ScanResponse} from './services/shredrApi';
 
 // Defining the pages, verdict and other details for the application
 type Page = 'home' | 'scan' | 'history' | 'settings' | 'analysing' | 'result';
 type Verdict = 'Benign' | 'Malicious'
-type Sample = { id: string; name: string; size: string; description: string; verdict: Verdict; score: number; explanation: string;};
-type ScanRecord = { id: string; sampleId: string; name: string; size: string; scannedAt: string; verdict: Verdict; score: number; explanation: string;}
-
-// As of 2/11, the records are fictional and exist only for the starting demonstration
-const demoSamples: Sample[] = [
-    {
-        id: 'demo-01', name: 'invoice_update.exe', size: '284 KB',
-        description: 'Suspicious invoice attachment',
-        verdict: 'Malicious', score: 93,
-        explanation: 'Demo prediction: the simulated executable exhibits characteristics associated with malicious Windows PE files.',
-    },
-    {
-        id: 'demo-02', name: 'printer_setup.exe', size: '1.2 MB',
-        description: 'Printer installation utility',
-        verdict: 'Benign', score: 5,
-        explanation: 'Demo prediction: the simulated executable has a low likelihood of being malicious, based on the fictional analysis of its features.',
-    },
-    {
-        id: 'demo-03', name: 'update_manager.exe', size: '512 KB',
-        description: 'Unverified update utility',
-        verdict: 'Malicious', score: 88,
-        explanation: 'Demo prediction: the simulated executable shows patterns that are commonly found in malicious software, according to the fictional model.',
-    },
-];
+type Sample = { id: string; name: string; size: string; description: string;};
+type ScanRecord = { id: string; sampleId: string; name: string; size: string; scannedAt: string; verdict: Verdict; score: number; explanation: string; humanReviewRequired?: boolean; threshold?: number; source?: string; };
 
 const navigation = [
     {id: 'home', label: 'Home', icon: Home},
@@ -36,6 +16,28 @@ const navigation = [
     {id: 'history', label: 'History', icon: History},
     {id: 'settings', label: 'Settings', icon: Settings2}
 ] as const;
+
+// // As of 2/11, the records are fictional and exist only for the starting demonstration
+// const demoSamples: Sample[] = [
+//     {
+//         id: 'demo-01', name: 'invoice_update.exe', size: '284 KB',
+//         description: 'Suspicious invoice attachment',
+//         verdict: 'Malicious', score: 93,
+//         explanation: 'Demo prediction: the simulated executable exhibits characteristics associated with malicious Windows PE files.',
+//     },
+//     {
+//         id: 'demo-02', name: 'printer_setup.exe', size: '1.2 MB',
+//         description: 'Printer installation utility',
+//         verdict: 'Benign', score: 5,
+//         explanation: 'Demo prediction: the simulated executable has a low likelihood of being malicious, based on the fictional analysis of its features.',
+//     },
+//     {
+//         id: 'demo-03', name: 'update_manager.exe', size: '512 KB',
+//         description: 'Unverified update utility',
+//         verdict: 'Malicious', score: 88,
+//         explanation: 'Demo prediction: the simulated executable shows patterns that are commonly found in malicious software, according to the fictional model.',
+//     },
+// ];
 
 const STORAGE_KEY = 'shredr-single-user-demo-history-v1';
 
@@ -60,7 +62,12 @@ function readableDate(iso: string) {
 export default function App() {
     const [page, setPage] = useState<Page>('home');
     const [toast, setToast] = useState('');
-    const [selectedId, setSelectedId] = useState(demoSamples[0].id);
+    const [samples, setSamples] = useState<Sample[]>([]);
+    const [selectedId, setSelectedId] = useState('');
+    const [connection, setConnection] = useState<'checking' | 'connected' | 'offline'>('checking');
+    const [sampleError, setSampleError] = useState('');
+    const [scanStatus, setScanStatus] = useState<'idle' | 'running' | 'complete'>('idle');
+    const scanToken = useRef(0);
     const [runningId, setRunningId] = useState<string | null>(null);
     const [search, setSearch] = useState('');
     const [filter, setFilter] = useState<'All' | 'Malicious' | 'Benign'>('All');
@@ -80,8 +87,9 @@ export default function App() {
     const [notice, setNotice] = useState('');
     const mainRef = useRef<HTMLElement | null>(null);
 
-const selectedSample = demoSamples.find(sample => sample.id === selectedId) ?? demoSamples[0];
-const runningSample = demoSamples.find(sample => sample.id === runningId);
+const selectedSample = samples.find(sample => sample.id === selectedId) ?? samples[0];
+const runningSample = samples.find(sample => sample.id === runningId);
+const filteredSamples = samples.filter(sample => sample.name.toLowerCase().includes(search.toLowerCase()));
 const maliciousCount = history.filter(item => item.verdict === 'Malicious').length;
 const benignCount = history.filter(item => item.verdict === 'Benign').length;
 
@@ -106,29 +114,66 @@ const filteredHistory = useMemo(
 // );
 
 const handleAnalyseClick = () => {
-  const selectedSample = demoSamples.find(
-    sample => sample.id === selectedId
-  )
-
-  if (!selectedSample) return;
-
-  const alreadyScanned = history.some(
-    scan => 
-      scan.sampleId === selectedSample.id || scan.name === selectedSample.name
-  )
-
+  if (!selectedSample || scanStatus === 'running') return;
+  const alreadyScanned = history.some(scan => scan.sampleId === selectedSample.id);
   if (alreadyScanned) {
-    setToast(`${selectedSample.name} has already been scanned!`);
+    setToast(`${selectedSample.name} has already been scanned.`)
     return;
   }
-
-  startAnalysis();
+  void startAnalysis(selectedSample);
 }
 
-function startAnalysis() {
-    setRunningId(selectedSample.id);
+async function startAnalysis(sample: Sample) {
+  const token = ++scanToken.current;
+  setSampleError('');
+    setRunningId(sample.id);
+    setScanStatus('running');
     setProgress(0);
     setPage('analysing');
+
+  try {
+    const [response] = await Promise.all([
+      analysePreparedSample(sample.id),
+      new Promise<void>(resolve => window.setTimeout(resolve, 1600)),
+    ]);
+    if (scanToken.current !== token) return;
+    setScanStatus('complete');
+    setProgress(100);
+    const score = Math.round(response.malware_probability * 10000) / 100;
+    const verdict: Verdict = response.classification === 'malware' ? 'Malicious' : 'Benign';
+    const explanation = `XGBoost assigned this prepared 242-feature record a ${score.toFixed(2)}% malware probability.` +
+    `The decision threshold is ${(response.decision_threshold * 100).toFixed(0)}%.` +
+    (response.human_review_required ? 'The prediction is near the decision boundary and requires manual review.' : '') +
+    'This is a prediction from pre-extracted features, not an executable-file scan or a Qwen explanation.';
+  const scan: ScanRecord = {
+    id: response.scan_id,
+    sampleId: response.sample_id,
+    name: response.name,
+    size: sample.size,
+    scannedAt: response.scanned_at,
+    verdict,
+    score,
+    explanation,
+    humanReviewRequired: response.human_review_required,
+    threshold: response.decision_threshold,
+    source: response.source,
+  };
+  window.setTimeout(() => {
+    if (scanToken.current !== token) return;
+    setHistory(items => [scan, ...items]);
+    setActiveScan(scan);
+    setRunningId(null);
+    setScanStatus('idle');
+    setPage('result');
+  }, 650);
+  } catch (error) {
+    if (scanToken.current !== token) return;
+    setRunningId(null);
+    setScanStatus('idle');
+    setSampleError(error instanceof Error ? error.message : 'Unable to contact the SHREDR API.');
+    setConnection('offline');
+    setPage('scan');
+  }
 };
 
 function openScan(scan: ScanRecord) {
@@ -137,10 +182,10 @@ function openScan(scan: ScanRecord) {
 }
 
 const analysisStages = [
-  'Reading executable',
-  'Extracting file features',
-  'Running XGBoost model',
-  'Generating analysis results',
+  'Loading prepared features',
+  'Requesting XGBoost prediction',
+  'Receiving model classification',
+  'Preparing results display',
 ];
 
 useEffect(() =>{
@@ -154,6 +199,7 @@ useEffect(() =>{
   }
 }, [history]);  
 
+// 10/11 to do
 useEffect(() => {
   if (!toast) return;
   const timer = window.setTimeout(() => {
@@ -170,37 +216,34 @@ useEffect(() => {
 }, [page]);
 
 useEffect(() => {
-  if (page !== 'analysing' || !runningId) return;
-  const sample = demoSamples.find(item => item.id === runningId);
-  if (!sample) return;
-
-  const startedAt = Date.now();
-  let completed = false;
-  const timer = window.setInterval(() => {
-    const percent = Math.min(100, Math.floor(((Date.now() - startedAt) / 8000) * 100));
-    setProgress(percent);
-
-  if (percent === 100 && !completed) {
-      completed = true;
-      window.clearInterval(timer);
-      const scan: ScanRecord = {
-          id: `${Date.now()}-${sample.id}`,
-          sampleId: sample.id,
-          name: sample.name,
-          size: sample.size,
-          scannedAt: new Date().toISOString(),
-          verdict: sample.verdict,
-          score: sample.score,
-          explanation: sample.explanation,
-      };
-      setHistory(items => [scan, ...items]);
-      setActiveScan(scan);
-      setPage('result');
+  let cancelled = false;
+  async function loadSamples() {
+    setConnection('checking');
+    try {
+      const records = await getPreparedSamples();
+      if (cancelled) return;
+      const mapped = records.map(item => ({...item, size: '242 features'}));
+      setSamples(mapped);
+      setSelectedId(current => mapped.some(item => item.id === current) ? current: (mapped[0]?.id ?? ''));
+      setConnection('connected');
+      setSampleError('');
+    } catch (error) {
+      if (cancelled) return;
+      setConnection('offline');
+      setSampleError(error instanceof Error ? error.message: 'Cannot load prepared samples.');
+    }
   }
-}, 50);
-return () => window.clearInterval(timer);
-}, [page, runningId]);
+  void loadSamples();
+  return () => {cancelled = true;};
+}, []);
 
+useEffect(() => {
+  if (page !== 'analysing' || scanStatus !== 'running') return;
+  const timer = window.setInterval(() => {
+    setProgress(value => Math.min(85, value + 3));
+  }, 90);
+  return () => window.clearInterval(timer);
+}, [page, scanStatus]);
 
 useEffect(() => {
   if (page !== 'result' || !activeScan) {
@@ -218,6 +261,11 @@ useEffect(() => {
 }, [page, activeScan?.id]);
 
 function goTo(destination: Page) {
+  if (page === 'analysing') {
+    ++scanToken.current;
+    setRunningId(null);
+    setScanStatus('idle');
+  }
     setPage(destination);
     setSearch('');
 }
@@ -236,7 +284,7 @@ return (
         {showBanner && (
           <div className="flex shrink-0 items-start gap-2 border-b border-[#b9dce1] bg-[#e5f4f6] px-5 py-2.5 text-xs text-[#285c65]">
             <Info size={15} className="mt-0.5 shrink-0" />
-            <p className="flex-1">This is the starting demonstrational prototype. Only fictional submissions and results.</p>
+            <p className="flex-1">Live XGBoost predictions on two prepared feature records. No executable upload or OpenClaw/Qwen integration yet.</p>
             <button aria-label="Dismiss demo banner" onClick={() => setShowBanner(false)}><X size={15} /></button>
           </div>
         )}
@@ -341,7 +389,7 @@ return (
             <div>
               <h1 className="text-2xl font-bold">Scan a File</h1>
               <p className="text-sm text-slate-500">
-                Choose an available executable sample to analyse.
+                Choose a prepared feature record for XGBoost analysis.
               </p>
             </div>
 
@@ -356,7 +404,7 @@ return (
               </h2>
 
               <div className="space-y-3">
-                {demoSamples.map(sample => (
+                {samples.map(sample => (
                   <button
                     key={sample.id}
                     type="button"
@@ -386,11 +434,13 @@ return (
                     </p>
                   </button>
                 ))}
+                {filteredSamples.length === 0 && <p className="py-4 text-sm text-slate-500">{connection === 'checking' ? 'Loading samples...' : 'No matching samples.'}</p>}
               </div>
             </Panel>
 
             <button
               type="button"
+              disabled={!selectedSample || connection !== 'connected'}
               onClick={handleAnalyseClick}
               className="w-full bg-[#eaf5f6] px-4 py-4 font-semibold text-slate-500 border"
             >
@@ -398,7 +448,7 @@ return (
             </button>
 
             <p className="text-center text-xs text-slate-500">
-              Demonstration only. No real files are processed.
+              Real XGBoost prediction on pre-extracted features. No .exe files are scanned.
             </p>
           </>
         )}
@@ -409,7 +459,7 @@ return (
           <div className="text-center">
             <h1 className="text-2xl font-bold">Analysing Sample</h1>
             <p className="text-sm text-slate-500">
-              Simulating executable analysis...
+              Requesting XGBoost prediction...
             </p>
           </div>
 
@@ -458,7 +508,7 @@ return (
         <FileCode2 size={24} className="text-[#276f7d]" />
         <div>
           <p className="text-xs text-slate-500">
-            Selected executable
+            Selected feature record
           </p>
           <p className="break-all font-semibold">
             {runningSample?.name}
@@ -527,7 +577,7 @@ return (
     </Panel>
 
     <p className="text-center text-xs text-slate-500">
-      No executable is actually being processed.
+      Visual loading animation; the API does not report stage-by-stage progress.
     </p>
   </>
 )}        
@@ -537,16 +587,16 @@ return (
               <h2 className="break-all font-semibold">{activeScan.name}</h2>
               <p className="mt-1 text-xs text-slate-500">{activeScan.size} · {readableDate(activeScan.scannedAt)}</p>
               <div className="mb-2 mt-5 flex items-center justify-between text-sm">
-                <span>AI Threat Score (Demo)</span>
+                <span>XGBoost malware probability</span>
                 <strong className="tabular-nums">{activeScan.score}%</strong>
               </div>
               <div className="h-3 overflow-hidden rounded-full bg-slate-100">
                 <div className={`h-full rounded-full transition-[width] duration-1500 ease-out ${activeScan.verdict === 'Malicious' ? 'bg-rose-500' : 'bg-[#7cb5bd]'}`} style={{ width: `${animatedScore}%` }} />
               </div>
-              <p className="mt-2 text-xs leading-5 text-slate-500">Higher scores represent greater predicted likelihood of the malicious class. These example scores are not real model outputs.</p>
+              <p className="mt-2 text-xs leading-5 text-slate-500">Higher scores represent greater predicted likelihood of the malicious class. This score is a real XGBoost model output from prepared features, not a complete executable scan.</p>
               <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4 text-sm">
                 <span className="text-slate-500">AI model</span>
-                <strong>XGBoost (planned)</strong>
+                <strong>XGBoost (live)</strong>
               </div>
               <div className="mt-3 flex items-center justify-between text-sm">
                 <span className="text-slate-500">Classification</span>
@@ -554,10 +604,11 @@ return (
               </div>
             </Panel>
 
+            {activeScan.humanReviewRequired && <Panel className="bg-amber-50"><p className="font-semibold text-amber-900">Manual review required</p><p className="mt-1 text-sm text-amber-800">This prediction is close to the configured decision threshold</p></Panel>}
             <Panel className="bg-[#eaf5f6]">
               <h2 className="mb-2 flex items-center gap-2 font-semibold"><Info size={18} /> What does this mean?</h2>
               <p className="text-sm leading-6 text-slate-700">{activeScan.explanation}</p>
-              <p className="mt-3 text-xs font-semibold leading-5 text-[#286e79]">This is not a real malware verdict. Even a real benign prediction is not proof of safety.</p>
+              <p className="mt-3 text-xs font-semibold leading-5 text-[#286e79]">A benign prediction is not proof of safety. Qwen and OpenClaw are not connected yet.</p>
             </Panel>
 
             <button type="button" onClick={() => goTo('scan')} className="flex w-full items-center justify-center gap-2 bg-[#eaf5f6] border px-4 py-3 font-semibold text-slate-500">Scan another sample <ArrowRight size={17} /></button>
@@ -567,7 +618,7 @@ return (
           {page === 'history' && <>
             <div>
               <h1 className="text-2xl font-bold">Scan History</h1>
-              <p className="mt-1 text-sm text-slate-500">Previous demonstrations on this device. No real files have been scanned.</p>
+              <p className="mt-1 text-sm text-slate-500">Real XGBoost results from prepared feature records, saved in this browser.</p>
             </div>
             <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
               <Search size={18} className="text-slate-400" />
@@ -584,7 +635,7 @@ return (
                 <div className="px-3 py-8 text-center">
                   <History size={28} className="mx-auto text-slate-400" />
                   <p className="mt-2 text-sm font-semibold">No matching scans</p>
-                  <p className="mt-1 text-xs text-slate-500">Complete a demo scan or change your search.</p>
+                  <p className="mt-1 text-xs text-slate-500">Analyse a prepared sample or change your search.</p>
                 </div>
               ) : filteredHistory.map(item => (
                 <button type="button" key={item.id} onClick={() => openScan(item)} className="flex w-full items-center gap-2 border-b border-slate-100 px-2 py-3 text-left last:border-b-0">
@@ -597,6 +648,7 @@ return (
                   <ChevronRight size={16} className="shrink-0 text-slate-400" />
                 </button>
               ))}
+
             </Panel>
             <p className="text-center text-xs text-slate-500">History is stored in this browser only for the prototype.</p>
           </>}
@@ -618,22 +670,22 @@ return (
             <Panel>
               <h2 className="mb-3 flex items-center gap-2 font-semibold"><Server size={18} /> AI server connection</h2>
               <div className="flex items-center gap-2 text-sm font-semibold text-amber-800"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Not connected — demo mode</div>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Future integration: mobile app → API/orchestration service → Python feature extraction and XGBoost model → classification returned to the app.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">mobile app → FastAPI → trained XGBoost model using prepared features. OpenClaw/Qwen orchestration and executable feature extraction are not yet integrated.</p>
             </Panel>
             <Panel>
               <h2 className="mb-2 font-semibold">How the finished app will work</h2>
               <ol className="list-decimal space-y-2 pl-5 text-sm leading-6 text-slate-600">
-                <li>Choose a server-hosted sample or upload an executable.</li>
-                <li>Server performs static analysis without executing the file.</li>
+                <li>Choose an allowlisted, server-hosted prepared feature record.</li>
+                <li>Server loads 242 pre-extracted features without executing a file.</li>
                 <li>Trained model returns a prediction and a threat score.</li>
                 <li>View the result and revisit it in scan history.</li>
               </ol>
             </Panel>
             <Panel>
               <h2 className="mb-2 font-semibold">Prototype limitations</h2>
-              <p className="text-sm leading-6 text-slate-600">No uploads, real malware detection, live progress, user accounts or server storage. All results are fictional. Demo history is stored only in this browser.</p>
+              <p className="text-sm leading-6 text-slate-600">The XGBoost prediction is real, but there is no executable upload or feature extraction, OpenClaw/Qwen orchestration, authentication, or live backend progress. Browser history is local; server scan history is temporary.</p>
             </Panel>
-            <button type="button" onClick={() => { setHistory([]); setActiveScan(null); setSelectedId(demoSamples[0].id); setFilter('All'); goTo('home'); }} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 font-semibold text-[#276f7d]"><RotateCcw size={17} /> Clear demo history</button>
+            <button type="button" onClick={() => { setHistory([]); setActiveScan(null); setSelectedId(samples[0].id); setFilter('All'); goTo('home'); }} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 font-semibold text-[#276f7d]"><RotateCcw size={17} /> Clear demo history</button>
           </>}
         </main>
 
