@@ -66,6 +66,7 @@ export default function App() {
     const [selectedId, setSelectedId] = useState('');
     const [connection, setConnection] = useState<'checking' | 'connected' | 'offline'>('checking');
     const [sampleError, setSampleError] = useState('');
+    const [retryCount, setRetryCount] = useState(0);
     const [scanStatus, setScanStatus] = useState<'idle' | 'running' | 'complete'>('idle');
     const scanToken = useRef(0);
     const [runningId, setRunningId] = useState<string | null>(null);
@@ -235,7 +236,7 @@ useEffect(() => {
   }
   void loadSamples();
   return () => {cancelled = true;};
-}, []);
+}, [retryCount]);
 
 useEffect(() => {
   if (page !== 'analysing' || scanStatus !== 'running') return;
@@ -391,6 +392,22 @@ return (
               <p className="text-sm text-slate-500">
                 Choose a prepared feature record for XGBoost analysis.
               </p>
+              {connection === 'offline' && (
+                <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={20} className="text-rose-600"></AlertTriangle>
+                    <p className="font-semibold text-rose-800">
+                      Backend Connection Failed
+                    </p>
+                  </div>
+
+                  <p className="mt-2 text-sm text-rose-700">
+                    {sampleError || 'Unable to connect to the SHREDR analysis server.'}
+                  </p>
+
+                  <button type="button" onClick={() => setRetryCount(count => count+1)} className="mt-3 rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white">Retry Connection</button>
+                </div>
+              )}
             </div>
 
           <label className="flex items-center gap-2 xl border border-slate-200 bg-white px-3 py-3">
@@ -669,7 +686,10 @@ return (
             </Panel>
             <Panel>
               <h2 className="mb-3 flex items-center gap-2 font-semibold"><Server size={18} /> AI server connection</h2>
-              <div className="flex items-center gap-2 text-sm font-semibold text-amber-800"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Not connected — demo mode</div>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <span className={`h-2.5 w-2.5 rounded-full ${connection === 'connected' ? 'bg-emerald-500' : connection === 'checking' ? 'bg-amber-400' : 'bg-rose-500'}`}></span>
+                <span> {connection === 'connected' ? 'Connected - XGBoost API' : connection === 'checking' ? 'Checking connection...' : 'Offline - API unavailable'}</span>
+              </div>
               <p className="mt-2 text-sm leading-6 text-slate-600">mobile app → FastAPI → trained XGBoost model using prepared features. OpenClaw/Qwen orchestration and executable feature extraction are not yet integrated.</p>
             </Panel>
             <Panel>
